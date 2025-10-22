@@ -1,7 +1,6 @@
 {
   "name": "b",
   "version": "1.0.0",
-  "main": "init.js",
   "type": "module",
   "scripts": {
     "test": "node test.js"
