@@ -1,0 +1,60 @@
+name: Test changed packages
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Find changed package dirs
+        id: changes
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            BASE="${{ github.event.pull_request.base.sha }}"
+          else
+            BASE="${{ github.event.before }}"
+            if [ "$BASE" = "0000000000000000000000000000000000000000" ]; then
+              BASE="$(git rev-list --max-parents=0 HEAD)"
+            fi
+          fi
+
+          echo "Base: $BASE"
+          CHANGED_DIRS="$(git diff --name-only "$BASE"...HEAD | awk -F/ 'NF>1 {print $1}' | sort -u)"
+          echo "Changed dirs: $CHANGED_DIRS"
+
+          RUN_DIRS=()
+          for d in $CHANGED_DIRS; do
+            if [ -f "$d/package.json" ]; then
+              RUN_DIRS+=("$d")
+            fi
+          done
+
+          if [ ${#RUN_DIRS[@]} -eq 0 ]; then
+            echo "run=0" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "dirs=${RUN_DIRS[*]}" >> "$GITHUB_OUTPUT"
+
+      - name: Run tests in changed packages
+        if: steps.changes.outputs.run != '0'
+        shell: bash
+        run: |
+          set -euo pipefail
+          for d in ${{ steps.changes.outputs.dirs }}; do
+            echo "::group::Testing $d"
+            (cd "$d" && (npm ci --prefer-offline --no-audit --fund=false || npm install) && npm test)
+            echo "::endgroup::"
+          done
