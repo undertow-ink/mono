@@ -27,28 +27,35 @@ jobs:
           if [ "${{ github.event_name }}" = "pull_request" ]; then
             BASE="${{ github.event.pull_request.base.sha }}"
           else
-            DEFAULT_BRANCH="${{ github.event.repository.default_branch }}"
-            BASE="$(git merge-base HEAD "origin/${DEFAULT_BRANCH}")"
+            BASE="${{ github.event.before }}"
+            # first push on a new branch may have a null "before"
+            if [ -z "$BASE" ] || [ "$BASE" = "0000000000000000000000000000000000000000" ]; then
+              DEFAULT_BRANCH="${{ github.event.repository.default_branch }}"
+              BASE="$(git merge-base HEAD "origin/${DEFAULT_BRANCH}")"
+            fi
           fi
 
           echo "Diff base: $BASE"
 
           changed_pkg_dirs=$(
-            git diff --name-only -z "$BASE"...HEAD \
-            | awk -v RS='\0' 'NF { print }' \
-            | while IFS= read -r file; do
-                dir="$(dirname "$file")"
-                # climb up until a package.json is found, then emit once
-                while [ "$dir" != "." ] && [ "$dir" != "/" ]; do
-                  if [ -f "$dir/package.json" ]; then
-                    printf '%s\0' "$dir"
-                    break
-                  fi
-                  dir="$(dirname "$dir")"
-                done
-              done \
-            | sort -zu \
-            | tr '\0' '\n'
+            git diff --name-only -z "$BASE"...HEAD |
+            while IFS= read -r -d '' file; do
+              # special case: root-level package.json changed
+              if [ "$file" = "package.json" ] && [ -f package.json ]; then
+                printf '%s\0' "."
+                continue
+              fi
+
+              dir="${file%/*}"
+              # climb up until we find the nearest package.json
+              while [ -n "$dir" ] && [ "$dir" != "." ] && [ "$dir" != "/" ]; do
+                if [ -f "$dir/package.json" ]; then
+                  printf '%s\0' "$dir"
+                  break
+                fi
+                dir="${dir%/*}"
+              done
+            done | sort -zu | tr '\0' '\n'
           )
 
           if [ -z "$changed_pkg_dirs" ]; then
