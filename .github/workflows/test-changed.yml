@@ -16,7 +16,7 @@ jobs:
         with:
           node-version: '22'
 
-      - name: Find changed package roots (full window)
+      - name: Find changed package roots
         id: pkgs
         shell: bash
         run: |
@@ -28,7 +28,6 @@ jobs:
             BASE="${{ github.event.pull_request.base.sha }}"
           else
             BASE="${{ github.event.before }}"
-            # first push on a new branch may have a null "before"
             if [ -z "$BASE" ] || [ "$BASE" = "0000000000000000000000000000000000000000" ]; then
               DEFAULT_BRANCH="${{ github.event.repository.default_branch }}"
               BASE="$(git merge-base HEAD "origin/${DEFAULT_BRANCH}")"
@@ -37,36 +36,51 @@ jobs:
 
           echo "Diff base: $BASE"
 
-          changed_pkg_dirs=$(
-            git diff --name-only -z "$BASE"...HEAD |
-            while IFS= read -r -d '' file; do
-              # special case: root-level package.json changed
-              if [ "$file" = "package.json" ] && [ -f package.json ]; then
-                printf '%s\0' "."
-                continue
+          # Read changed files (NUL-separated) into an array
+          mapfile -d '' -t files < <(git diff --name-only -z "$BASE"...HEAD)
+
+          declare -A roots=()
+
+          for file in "${files[@]}"; do
+            # root-level package.json special case
+            if [[ "$file" == "package.json" && -f package.json ]]; then
+              roots["."]=1
+              continue
+            fi
+
+            # start from the file's directory; if no slash in path, skip
+            dir="${file%/*}"
+            [[ "$dir" == "$file" ]] && continue
+
+            # climb to nearest ancestor with package.json, stopping if parent no longer shortens
+            while [[ -n "$dir" && "$dir" != "." && "$dir" != "/" ]]; do
+              if [[ -f "$dir/package.json" ]]; then
+                roots["$dir"]=1
+                break
               fi
+              parent="${dir%/*}"
+              if [[ "$parent" == "$dir" ]]; then
+                dir="."
+              else
+                dir="$parent"
+              fi
+            done
+          done
 
-              dir="${file%/*}"
-              # climb up until we find the nearest package.json
-              while [ -n "$dir" ] && [ "$dir" != "." ] && [ "$dir" != "/" ]; do
-                if [ -f "$dir/package.json" ]; then
-                  printf '%s\0' "$dir"
-                  break
-                fi
-                dir="${dir%/*}"
-              done
-            done | sort -zu | tr '\0' '\n'
-          )
-
-          if [ -z "$changed_pkg_dirs" ]; then
+          if (( ${#roots[@]} == 0 )); then
             echo "dirs=" >> "$GITHUB_OUTPUT"
             echo "No changed package roots detected."
             exit 0
           fi
 
-          printf 'dirs=%s\n' "$(printf '%s ' $changed_pkg_dirs)" >> "$GITHUB_OUTPUT"
+          # emit space-separated list
+          dirs=""
+          for d in "${!roots[@]}"; do dirs+="$d "; done
+          dirs="${dirs%% }"
+
+          echo "dirs=$dirs" >> "$GITHUB_OUTPUT"
           echo "Packages to test:"
-          echo "$changed_pkg_dirs"
+          printf '%s\n' $dirs
 
       - name: Run tests in all discovered packages
         if: steps.pkgs.outputs.dirs != ''
