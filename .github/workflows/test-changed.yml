@@ -1,4 +1,5 @@
 name: Test changed packages
+
 on:
   push:
   pull_request:
@@ -8,49 +9,68 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with: { fetch-depth: 0 }
-      - uses: actions/setup-node@v4
-        with: { node-version: '22' }
+        with:
+          fetch-depth: 0
 
-      - name: Find and test changed package roots
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Find changed package roots (full window)
+        id: pkgs
         shell: bash
         run: |
           set -euo pipefail
 
+          git fetch origin +refs/heads/*:refs/remotes/origin/*
+
           if [ "${{ github.event_name }}" = "pull_request" ]; then
             BASE="${{ github.event.pull_request.base.sha }}"
           else
-            BASE="${{ github.event.before }}"
-            [ "$BASE" = "0000000000000000000000000000000000000000" ] && BASE="$(git rev-list --max-parents=0 HEAD)"
+            DEFAULT_BRANCH="${{ github.event.repository.default_branch }}"
+            BASE="$(git merge-base HEAD "origin/${DEFAULT_BRANCH}")"
           fi
 
-          # Collect nearest ancestor dirs that contain package.json
-          changed_pkg_dirs=$(git diff --name-only -z "$BASE"...HEAD \
+          echo "Diff base: $BASE"
+
+          changed_pkg_dirs=$(
+            git diff --name-only -z "$BASE"...HEAD \
             | awk -v RS='\0' 'NF { print }' \
             | while IFS= read -r file; do
-                dir=$(dirname "$file")
+                dir="$(dirname "$file")"
+                # climb up until a package.json is found, then emit once
                 while [ "$dir" != "." ] && [ "$dir" != "/" ]; do
                   if [ -f "$dir/package.json" ]; then
                     printf '%s\0' "$dir"
                     break
                   fi
-                  dir=$(dirname "$dir")
+                  dir="$(dirname "$dir")"
                 done
               done \
             | sort -zu \
-            | tr '\0' '\n')
+            | tr '\0' '\n'
+          )
 
           if [ -z "$changed_pkg_dirs" ]; then
-            echo "No changed package roots detected. Exiting."
+            echo "dirs=" >> "$GITHUB_OUTPUT"
+            echo "No changed package roots detected."
             exit 0
           fi
 
-          echo "Will test:"
+          printf 'dirs=%s\n' "$(printf '%s ' $changed_pkg_dirs)" >> "$GITHUB_OUTPUT"
+          echo "Packages to test:"
           echo "$changed_pkg_dirs"
 
-          # Run tests per unique package root
-          while IFS= read -r d; do
+      - name: Run tests in all discovered packages
+        if: steps.pkgs.outputs.dirs != ''
+        shell: bash
+        run: |
+          set -euo pipefail
+          failed=0
+          for d in ${{ steps.pkgs.outputs.dirs }}; do
             echo "::group::Testing $d"
-            ( cd "$d" && (npm ci --prefer-offline --no-audit --fund=false || npm install) && npm test )
+            # keep going even if one package fails
+            ( cd "$d" && (npm ci --prefer-offline --no-audit --fund=false || npm install) && npm test ) || failed=1
             echo "::endgroup::"
-          done <<< "$changed_pkg_dirs"
+          done
+          exit $failed
