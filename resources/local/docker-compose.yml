@@ -1,0 +1,42 @@
+services:
+
+  pg-graph-doc:
+    container_name: pg-graph-doc
+    image: bedwards/pg-graph-doc:17
+    ports: ["5432:5432"]
+    restart: unless-stopped
+    volumes: [pgdata:/var/lib/postgresql/data]
+
+    environment:
+      POSTGRES_DB: app
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+
+    command: [
+      "postgres",
+        "-c", "shared_preload_libraries=pg_documentdb_core,pg_documentdb,pg_cron",
+        "-c", "cron.database_name=app"]
+
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+
+  ferretdb:
+    container_name: ferretdb
+    image: ghcr.io/ferretdb/ferretdb:latest
+    ports: ["27017:27017"]
+    restart: unless-stopped
+    depends_on: [pg-graph-doc]
+
+    environment:
+      FERRETDB_POSTGRESQL_URL: postgres://postgres:postgres@pg-graph-doc:5432/app
+      FERRETDB_TELEMETRY: 0
+      FERRETDB_AUTH: 0
+
+
+volumes:
+  pgdata:
